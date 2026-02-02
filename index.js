@@ -41,6 +41,56 @@ async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     // await client.connect();
+
+    const db = client.db('blood_donation_db');
+    const userCollection = db.collection('users');
+
+    // user related apis
+    app.get('/users', async (req, res) => {
+      const { email, search } = req.query;
+      const query = {};
+      if (email) {
+        query.email = email;
+      }
+
+      // search functionality
+      // if (search) {
+      //   // query.displayName = search;
+      //   query.$or = [
+      //     { displayName: { $regex: search, $options: 'i' } },
+      //     { email: { $regex: search, $options: 'i' } },
+      //     { role: { $regex: search, $options: 'i' } },
+      //   ];
+      // }
+
+      // সব user fetch
+      const users = await userCollection.find(query).toArray();
+
+      // const sortedUsers = users.sort((a, b) => {
+      //   if (a.email === 'osmanzakaria801@gmail.com') return -1; // top
+      //   if (b.email === 'osmanzakaria801@gmail.com') return 1;
+      //   // others createdAt descending
+      //   return new Date(b.createdAt) - new Date(a.createdAt);
+      // });
+      res.send(users);
+    });
+
+    app.post('/users', async (req, res) => {
+      console.log('User API hit', req.body); // 👈 add this
+      const user = req.body;
+      user.role = 'user';
+      user.createdAt = new Date();
+
+      const email = user.email;
+      const userExists = await userCollection.findOne({ email });
+      if (userExists) {
+        return res.send({ message: 'user already exists' });
+      }
+
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
+
     // Send a ping to confirm a successful connection
     await client.db('admin').command({ ping: 1 });
     console.log('Pinged your deployment. You successfully connected to MongoDB!');
