@@ -1,7 +1,9 @@
 // ============================================
 // Blood Donation Backend - Beginner Friendly
 // ============================================
-
+const dns = require('dns');
+dns.setServers(['1.1.1.1', '1.0.0.1']);
+// dns.setServers(['8.8.8.8', '8.8.4.4']);
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -14,6 +16,8 @@ app.use(cors());
 
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.daqctd4.mongodb.net/?appName=Cluster0`;
+
+// const uri = 'mongodb://localhost:27017';
 
 const admin = require('firebase-admin');
 // const serviceAccount = require('./blood-donation-firebase-adminsdk.json');
@@ -40,7 +44,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    // await client.connect();
+    await client.connect();
 
     const db = client.db('blood_donation_db');
     const userCollection = db.collection('users');
