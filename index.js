@@ -47,7 +47,9 @@ async function run() {
     await client.connect();
 
     const db = client.db('blood_donation_db');
-    const userCollection = db.collection('users');
+    const usersCollection = db.collection('users');
+    const volunteersCollection = db.collection('volunteers');
+    const donorsCollection = db.collection('donors');
 
     // user related apis
     app.get('/users', async (req, res) => {
@@ -68,7 +70,7 @@ async function run() {
       // }
 
       // সব user fetch
-      const users = await userCollection.find(query).toArray();
+      const users = await usersCollection.find(query).toArray();
 
       // const sortedUsers = users.sort((a, b) => {
       //   if (a.email === 'osmanzakaria801@gmail.com') return -1; // top
@@ -79,6 +81,13 @@ async function run() {
       res.send(users);
     });
 
+    app.get('/users/:email/role', async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      res.send({ role: user?.role || 'user' });
+    });
+
     app.post('/users', async (req, res) => {
       console.log('User API hit', req.body); // 👈 add this
       const user = req.body;
@@ -86,12 +95,12 @@ async function run() {
       user.createdAt = new Date();
 
       const email = user.email;
-      const userExists = await userCollection.findOne({ email });
+      const userExists = await usersCollection.findOne({ email });
       if (userExists) {
         return res.send({ message: 'user already exists' });
       }
 
-      const result = await userCollection.insertOne(user);
+      const result = await usersCollection.insertOne(user);
       res.send(result);
     });
 
