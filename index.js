@@ -2,25 +2,23 @@
 // Blood Donation Backend - Beginner Friendly
 // ============================================
 const dns = require('dns');
-dns.setServers(['1.1.1.1', '1.0.0.1']);
-// dns.setServers(['8.8.8.8', '8.8.4.4']);
+dns.setServers(['1.1.1.1', '1.0.0.1']); // Use Cloudflare DNS
+
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+
 const app = express();
 const port = process.env.PORT || 5000;
 
-// MiddleWare
+// Middleware
 app.use(express.json());
 app.use(cors());
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.daqctd4.mongodb.net/?appName=Cluster0`;
 
-// const uri = 'mongodb://localhost:27017';
-
 const admin = require('firebase-admin');
-// const serviceAccount = require('./blood-donation-firebase-adminsdk.json');
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8');
 const serviceAccount = JSON.parse(decoded);
 
@@ -32,7 +30,7 @@ app.get('/', (req, res) => {
   res.send('Blood Donation Server is Running!');
 });
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+// MongoDB client
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -43,76 +41,184 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
     const db = client.db('blood_donation_db');
     const usersCollection = db.collection('users');
     const volunteersCollection = db.collection('volunteers');
     const donorsCollection = db.collection('donors');
+    const logsCollection = db.collection('logs');
 
-    // user related apis
+    // ---------- Helper function for logging ----------
+    const actionLogs = async ({ actionType, userEmail, description, performedBy = 'system' }) => {
+      const log = {
+        actionType,
+        userEmail,
+        description,
+        performedBy,
+        timestamp: new Date(),
+      };
+      await logsCollection.insertOne(log);
+    };
+
+    // ---------- Helper function to fetch user by ID ----------
+    const getUserById = async (id) => {
+      return usersCollection.findOne({ _id: new ObjectId(id) });
+    };
+
+    // ---------- User APIs ----------
     app.get('/users', async (req, res) => {
-      const { email, search } = req.query;
-      const query = {};
-      if (email) {
-        query.email = email;
+      try {
+        const { email, search } = req.query;
+        const query = {};
+        if (email) query.email = email;
+
+        // Optional search functionality
+        if (search) {
+          query.$or = [
+            { displayName: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } },
+            { role: { $regex: search, $options: 'i' } },
+          ];
+        }
+
+        const users = await usersCollection.find(query).toArray();
+
+        // Optional: log fetch action
+        await actionLogs({
+          actionType: 'fetch_users',
+          userEmail: email || 'all',
+          description: `Fetched users with search query: ${search || 'none'}`,
+        });
+
+        res.send(users);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error fetching users' });
       }
-
-      // search functionality
-      // if (search) {
-      //   // query.displayName = search;
-      //   query.$or = [
-      //     { displayName: { $regex: search, $options: 'i' } },
-      //     { email: { $regex: search, $options: 'i' } },
-      //     { role: { $regex: search, $options: 'i' } },
-      //   ];
-      // }
-
-      // সব user fetch
-      const users = await usersCollection.find(query).toArray();
-
-      // const sortedUsers = users.sort((a, b) => {
-      //   if (a.email === 'osmanzakaria801@gmail.com') return -1; // top
-      //   if (b.email === 'osmanzakaria801@gmail.com') return 1;
-      //   // others createdAt descending
-      //   return new Date(b.createdAt) - new Date(a.createdAt);
-      // });
-      res.send(users);
     });
 
     app.get('/users/:email/role', async (req, res) => {
-      const email = req.params.email;
-      const query = { email };
-      const user = await usersCollection.findOne(query);
-      res.send({ role: user?.role || 'user' });
+      try {
+        const email = req.params.email;
+        const user = await usersCollection.findOne({ email });
+        await actionLogs({
+          actionType: 'fetch_role',
+          userEmail: email,
+          description: 'Role information requested',
+        });
+        res.send({ role: user?.role || 'user' });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error fetching role' });
+      }
     });
 
     app.post('/users', async (req, res) => {
-      console.log('User API hit', req.body); // 👈 add this
-      const user = req.body;
-      user.role = 'user';
-      user.createdAt = new Date();
+      try {
+        const user = req.body;
+        user.role = 'donor';
+        user.status = 'active';
+        user.createdAt = new Date();
 
-      const email = user.email;
-      const userExists = await usersCollection.findOne({ email });
-      if (userExists) {
-        return res.send({ message: 'user already exists' });
+        const email = user.email;
+        const userExists = await usersCollection.findOne({ email });
+
+        if (userExists) {
+          await actionLogs({
+            actionType: 'create_user_failed',
+            userEmail: email,
+            description: 'User already exists',
+          });
+          return res.status(400).send({ message: 'User already exists' });
+        }
+
+        const result = await usersCollection.insertOne(user);
+
+        await actionLogs({
+          actionType: 'create_user',
+          userEmail: email,
+          description: 'New user created',
+        });
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error creating user' });
       }
-
-      const result = await usersCollection.insertOne(user);
-      res.send(result);
     });
 
-    // Send a ping to confirm a successful connection
+    app.patch('/users/:id/status', async (req, res) => {
+      try {
+        const { status } = req.body;
+        const { id } = req.params;
+
+        if (!status) return res.status(400).send({ message: 'Invalid status' });
+
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { status, updatedAt: new Date() } };
+
+        await usersCollection.updateOne(query, updateDoc);
+
+        const user = await getUserById(id);
+        await actionLogs({
+          actionType: 'update_status',
+          userEmail: user.email,
+          description: `Status changed to ${status}`,
+        });
+
+        res.send({ message: 'Status updated' });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error updating status' });
+      }
+    });
+
+    app.patch('/users/:id/role', async (req, res) => {
+      try {
+        const { role } = req.body;
+        const { id } = req.params;
+
+        if (!role) {
+          await actionLogs({
+            actionType: 'update_role_failed',
+            userEmail: 'unknown',
+            description: `Invalid role attempted for user ID ${id}`,
+          });
+          return res.status(400).send({ message: 'Invalid role' });
+        }
+
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { role, updatedAt: new Date() } };
+
+        await usersCollection.updateOne(query, updateDoc);
+
+        const user = await getUserById(id);
+        await actionLogs({
+          actionType: 'update_role',
+          userEmail: user.email,
+          description: `Role changed to ${role}`,
+        });
+
+        res.send({ message: 'Role updated' });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error updating role' });
+      }
+    });
+
+    // ---------- Volunteer / Donor APIs ----------
+    // TODO: Apply same structure + actionLogs + try-catch + validation
+
     await client.db('admin').command({ ping: 1 });
-    console.log('Pinged your deployment. You successfully connected to MongoDB!');
+    console.log('Pinged your deployment. Successfully connected to MongoDB!');
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // Optional: client.close();
   }
 }
+
 run().catch(console.dir);
+
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+  console.log(`Server listening on port ${port}`);
 });
