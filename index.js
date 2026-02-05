@@ -13,7 +13,27 @@ const port = process.env.PORT || 5000;
 
 // Middleware
 app.use(express.json());
-app.use(cors());
+// app.use(cors());
+
+const allowedOrigin = process.env.CLIENT_URL;
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // allow Postman / server requests
+      if (!origin) return callback(null, true);
+      // allow any localhost port
+      if (origin.includes('localhost')) {
+        return callback(null, true);
+      }
+      // allow production frontend
+      if (origin === allowedOrigin) {
+        return callback(null, true);
+      }
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  }),
+);
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.daqctd4.mongodb.net/?appName=Cluster0`;
@@ -49,7 +69,7 @@ async function run() {
     const donorsCollection = db.collection('donors');
     const logsCollection = db.collection('logs');
 
-    // ---------- Helper function for logging ----------
+    // function for logging
     const actionLogs = async ({ actionType, userEmail, description, performedBy = 'system' }) => {
       const log = {
         actionType,
@@ -61,12 +81,12 @@ async function run() {
       await logsCollection.insertOne(log);
     };
 
-    // ---------- Helper function to fetch user by ID ----------
+    // function to fetch user by ID
     const getUserById = async (id) => {
       return usersCollection.findOne({ _id: new ObjectId(id) });
     };
 
-    // ---------- User APIs ----------
+    // User APIs
     app.get('/users', async (req, res) => {
       try {
         const { email, search } = req.query;
@@ -107,7 +127,7 @@ async function run() {
           userEmail: email,
           description: 'Role information requested',
         });
-        res.send({ role: user?.role || 'user' });
+        res.send({ role: user?.role || 'donor' });
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: 'Error fetching role' });
