@@ -68,6 +68,7 @@ async function run() {
     const volunteersCollection = db.collection('volunteers');
     const donorsCollection = db.collection('donors');
     const logsCollection = db.collection('logs');
+    const donationRequestCollection = db.collection('donationRequest');
 
     // function for logging
     const actionLogs = async ({ actionType, userEmail, description, performedBy = 'system' }) => {
@@ -229,6 +230,44 @@ async function run() {
 
     // ---------- Volunteer / Donor APIs ----------
     // TODO: Apply same structure + actionLogs + try-catch + validation
+
+    // GET donation requests by user email
+    app.get('/donationRequest', async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: 'Email is required' });
+        }
+
+        const result = await donationRequestCollection.find({ email }).toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to get donation requests' });
+      }
+    });
+
+    // POST donation request
+    app.post('/donationRequest', async (req, res) => {
+      try {
+        const donationRequest = req.body;
+        donationRequest.status = 'pending';
+        donationRequest.createdAt = new Date();
+
+        const result = await donationRequestCollection.insertOne(donationRequest);
+        await actionLogs({
+          actionType: 'create_donation_request',
+          userEmail: donationRequest.email,
+          description: 'New donation request created',
+        });
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error creating donation request' });
+      }
+    });
 
     await client.db('admin').command({ ping: 1 });
     console.log('Pinged your deployment. Successfully connected to MongoDB!');
