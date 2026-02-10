@@ -249,6 +249,17 @@ async function run() {
       }
     });
 
+    // GET all pending donation requests (public)
+    app.get('/donationRequest/pending', async (req, res) => {
+      try {
+        const result = await donationRequestCollection.find({ status: 'pending' }).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to get pending donation requests' });
+      }
+    });
+
     // POST donation request
     app.post('/donationRequest', async (req, res) => {
       try {
@@ -266,6 +277,52 @@ async function run() {
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: 'Error creating donation request' });
+      }
+    });
+
+    // GET donation request by id
+    app.get('/donationRequest/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await donationRequestCollection.findOne({ _id: new ObjectId(id) });
+        if (!result) {
+          return res.status(404).send({ message: 'Donation request not found' });
+        }
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to get donation request' });
+      }
+    });
+
+    // PATCH donation request status + donor info
+    app.patch('/donationRequest/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { status, donorName, donorEmail } = req.body;
+
+        if (!status) {
+          return res.status(400).send({ message: 'Status is required' });
+        }
+
+        const updateDoc = {
+          $set: {
+            status,
+            donorName: donorName || null,
+            donorEmail: donorEmail || null,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await donationRequestCollection.updateOne(
+          { _id: new ObjectId(id) },
+          updateDoc,
+        );
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to update donation request' });
       }
     });
 
