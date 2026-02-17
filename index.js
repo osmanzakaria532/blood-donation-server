@@ -69,6 +69,20 @@ async function run() {
     const donorsCollection = db.collection('donors');
     const logsCollection = db.collection('logs');
     const donationRequestCollection = db.collection('donationRequest');
+    const fundingCollection = db.collection('funding');
+
+    // normalize user status values
+    const normalizeUserStatus = (status) => {
+      if (!status) return 'active';
+      if (status === 'block') return 'blocked';
+      return status;
+    };
+
+    const getUserRoleByEmail = async (email) => {
+      if (!email) return null;
+      const user = await usersCollection.findOne({ email });
+      return user?.role || 'donor';
+    };
 
     // function for logging
     const actionLogs = async ({ actionType, userEmail, description, performedBy = 'system' }) => {
@@ -104,6 +118,10 @@ async function run() {
         }
 
         const users = await usersCollection.find(query).toArray();
+        const normalized = users.map((u) => ({
+          ...u,
+          status: normalizeUserStatus(u.status),
+        }));
 
         // Optional: log fetch action
         await actionLogs({
@@ -112,10 +130,28 @@ async function run() {
           description: `Fetched users with search query: ${search || 'none'}`,
         });
 
-        res.send(users);
+        res.send(normalized);
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: 'Error fetching users' });
+      }
+    });
+
+    // Public donors search
+    app.get('/donors', async (req, res) => {
+      try {
+        const { bloodGroup, district, upazila } = req.query;
+        const query = { role: 'donor', status: 'active' };
+
+        if (bloodGroup) query.bloodGroup = bloodGroup.toLowerCase();
+        if (district) query.district = district.toLowerCase();
+        if (upazila) query.upazila = upazila.toLowerCase();
+
+        const donors = await usersCollection.find(query).toArray();
+        res.send(donors);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to search donors' });
       }
     });
 
@@ -174,10 +210,14 @@ async function run() {
         const { status } = req.body;
         const { id } = req.params;
 
-        if (!status) return res.status(400).send({ message: 'Invalid status' });
+        const normalizedStatus = normalizeUserStatus(status);
+        const allowedStatuses = ['active', 'blocked'];
+        if (!allowedStatuses.includes(normalizedStatus)) {
+          return res.status(400).send({ message: 'Invalid status' });
+        }
 
         const query = { _id: new ObjectId(id) };
-        const updateDoc = { $set: { status, updatedAt: new Date() } };
+        const updateDoc = { $set: { status: normalizedStatus, updatedAt: new Date() } };
 
         await usersCollection.updateOne(query, updateDoc);
 
@@ -185,13 +225,31 @@ async function run() {
         await actionLogs({
           actionType: 'update_status',
           userEmail: user.email,
-          description: `Status changed to ${status}`,
+          description: `Status changed to ${normalizedStatus}`,
         });
 
         res.send({ message: 'Status updated' });
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: 'Error updating status' });
+      }
+    });
+
+    // One-time normalization for existing users (block -> blocked)
+    app.patch('/admin/normalize-user-status', async (req, res) => {
+      try {
+        const result = await usersCollection.updateMany(
+          { status: 'block' },
+          { $set: { status: 'blocked', updatedAt: new Date() } },
+        );
+        res.send({
+          message: 'User status normalized',
+          matchedCount: result.matchedCount,
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to normalize user status' });
       }
     });
 
@@ -228,6 +286,28 @@ async function run() {
       }
     });
 
+    // Admin stats
+    app.get('/admin-stats', async (req, res) => {
+      try {
+        const totalUsers = await usersCollection.countDocuments();
+        const totalDonationRequests = await donationRequestCollection.countDocuments();
+
+        const fundingAgg = await fundingCollection
+          .aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }])
+          .toArray();
+        const totalFunding = fundingAgg[0]?.total || 0;
+
+        res.send({
+          totalUsers,
+          totalDonationRequests,
+          totalFunding,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to load admin stats' });
+      }
+    });
+
     // ---------- Volunteer / Donor APIs ----------
     // TODO: Apply same structure + actionLogs + try-catch + validation
 
@@ -240,8 +320,47 @@ async function run() {
           return res.status(400).send({ message: 'Email is required' });
         }
 
-        const result = await donationRequestCollection.find({ email }).toArray();
+        const result = await donationRequestCollection
+          .find({ requesterEmail: email })
+          .sort({ createdAt: -1 })
+          .toArray();
 
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to get donation requests' });
+      }
+    });
+
+    // GET recent donation requests by user email
+    app.get('/donationRequest/recent', async (req, res) => {
+      try {
+        const { email, limit = 3 } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: 'Email is required' });
+        }
+
+        const take = Math.max(1, Math.min(Number(limit) || 3, 10));
+        const result = await donationRequestCollection
+          .find({ requesterEmail: email })
+          .sort({ createdAt: -1 })
+          .limit(take)
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to get recent donation requests' });
+      }
+    });
+
+    // GET all donation requests (admin/volunteer)
+    app.get('/donationRequest/all', async (req, res) => {
+      try {
+        const { status } = req.query;
+        const query = status ? { status } : {};
+        const result = await donationRequestCollection.find(query).toArray();
         res.send(result);
       } catch (error) {
         console.error(error);
@@ -300,6 +419,16 @@ async function run() {
       try {
         const { id } = req.params;
         const { status, donorName, donorEmail } = req.body;
+        const actorEmail = req.headers['x-user-email'] || req.body.actorEmail;
+
+        if (!actorEmail) {
+          return res.status(401).send({ message: 'Actor email is required' });
+        }
+
+        const actorRole = await getUserRoleByEmail(actorEmail);
+        if (actorRole === 'volunteer' && (donorName || donorEmail)) {
+          return res.status(403).send({ message: 'Volunteer cannot update donor info' });
+        }
 
         if (!status) {
           return res.status(400).send({ message: 'Status is required' });
@@ -323,6 +452,84 @@ async function run() {
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: 'Failed to update donation request' });
+      }
+    });
+
+    // UPDATE donation request (editable fields)
+    app.put('/donationRequest/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const actorEmail = req.headers['x-user-email'] || req.body.actorEmail;
+
+        if (!actorEmail) {
+          return res.status(401).send({ message: 'Actor email is required' });
+        }
+
+        const actorRole = await getUserRoleByEmail(actorEmail);
+        if (actorRole === 'volunteer') {
+          return res.status(403).send({ message: 'Volunteer cannot edit donation requests' });
+        }
+
+        const {
+          recipientName,
+          recipientBloodGroup,
+          recipientDivision,
+          recipientDistrict,
+          recipientUpazila,
+          hospitalName,
+          recipientAddress,
+          donationDate,
+          donationTime,
+          message,
+        } = req.body;
+
+        const updateDoc = {
+          $set: {
+            recipientName,
+            recipientBloodGroup,
+            recipientDivision,
+            recipientDistrict,
+            recipientUpazila,
+            hospitalName,
+            recipientAddress,
+            donationDate,
+            donationTime,
+            message: message || '',
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await donationRequestCollection.updateOne(
+          { _id: new ObjectId(id) },
+          updateDoc,
+        );
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to update donation request' });
+      }
+    });
+
+    // DELETE donation request
+    app.delete('/donationRequest/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const actorEmail = req.headers['x-user-email'] || req.query.email;
+
+        if (!actorEmail) {
+          return res.status(401).send({ message: 'Actor email is required' });
+        }
+
+        const actorRole = await getUserRoleByEmail(actorEmail);
+        if (actorRole === 'volunteer') {
+          return res.status(403).send({ message: 'Volunteer cannot delete donation requests' });
+        }
+
+        const result = await donationRequestCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to delete donation request' });
       }
     });
 
