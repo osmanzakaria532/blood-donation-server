@@ -7,6 +7,7 @@ dns.setServers(['1.1.1.1', '1.0.0.1']); // Use Cloudflare DNS
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const Stripe = require('stripe');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -292,6 +293,44 @@ async function run() {
       }
     });
 
+    app.patch('/users/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const allowedFields = ['displayName', 'bloodGroup', 'district', 'upazila', 'photoURL'];
+        const updateFields = {};
+
+        allowedFields.forEach((field) => {
+          if (req.body[field] !== undefined) {
+            updateFields[field] = req.body[field];
+          }
+        });
+
+        if (Object.keys(updateFields).length === 0) {
+          return res.status(400).send({ message: 'No valid profile fields provided' });
+        }
+
+        updateFields.updatedAt = new Date();
+
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateFields },
+        );
+
+        const user = await getUserById(id);
+        await actionLogs({
+          actionType: 'update_profile',
+          userEmail: user?.email || 'unknown',
+          description: 'Profile information updated',
+          performedBy: user?.email || 'unknown',
+        });
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Error updating profile' });
+      }
+    });
+
     // Admin stats
     app.get('/admin-stats', async (req, res) => {
       try {
@@ -311,6 +350,81 @@ async function run() {
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: 'Failed to load admin stats' });
+      }
+    });
+
+    // Funding APIs
+    app.get('/fundings', async (req, res) => {
+      try {
+        const result = await fundingCollection.find().sort({ fundedAt: -1 }).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to load fundings' });
+      }
+    });
+
+    app.post('/create-payment-intent', async (req, res) => {
+      try {
+        const { amount } = req.body;
+        const numericAmount = Number(amount);
+
+        if (!process.env.STRIPE_SECRET_KEY) {
+          return res.status(500).send({ message: 'Stripe secret key is not configured' });
+        }
+
+        if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+          return res.status(400).send({ message: 'Valid amount is required' });
+        }
+
+        const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(numericAmount * 100),
+          currency: 'usd',
+          payment_method_types: ['card'],
+        });
+
+        res.send({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to create payment intent' });
+      }
+    });
+
+    app.post('/fundings', async (req, res) => {
+      try {
+        const { userName, userEmail, amount, transactionId } = req.body;
+        const numericAmount = Number(amount);
+
+        if (!userEmail || !transactionId || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+          return res.status(400).send({ message: 'Funding information is incomplete' });
+        }
+
+        const existingFunding = await fundingCollection.findOne({ transactionId });
+        if (existingFunding) {
+          return res.send(existingFunding);
+        }
+
+        const funding = {
+          userName: userName || 'Anonymous Donor',
+          userEmail,
+          amount: numericAmount,
+          transactionId,
+          fundedAt: new Date(),
+        };
+
+        const result = await fundingCollection.insertOne(funding);
+        await actionLogs({
+          actionType: 'create_funding',
+          userEmail,
+          description: `Funding received: ${numericAmount}`,
+          performedBy: userEmail,
+        });
+
+        res.send({ ...result, funding });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to save funding' });
       }
     });
 
